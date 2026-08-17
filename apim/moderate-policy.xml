@@ -1,0 +1,86 @@
+<policies>
+  <inbound>
+    <base />
+    <set-variable name="inputText" value="@{
+        var body = context.Request.Body?.As&lt;JObject&gt;(preserveContent: true);
+        return body?[&quot;text&quot;]?.ToString() ?? &quot;&quot;;
+    }" />
+    <set-variable name="dlpHit" value="@{
+        var t = (string)context.Variables[&quot;inputText&quot;];
+        var patterns = new [] {
+            @&quot;AKIA[0-9A-Z]{16}&quot;,
+            @&quot;\b\d{3}-\d{2}-\d{4}\b&quot;,
+            @&quot;SECRET-[A-Z0-9]+&quot;,
+            @&quot;-----BEGIN (RSA |EC )?PRIVATE KEY-----&quot;
+        };
+        foreach (var p in patterns) {
+            if (System.Text.RegularExpressions.Regex.IsMatch(t, p)) { return p; }
+        }
+        return &quot;&quot;;
+    }" />
+    <choose>
+      <when condition="@(((string)context.Variables[&quot;dlpHit&quot;]).Length &gt; 0)">
+        <return-response>
+          <set-status code="403" reason="Blocked by DLP" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{ return new JObject(new JProperty(&quot;verdict&quot;,&quot;block&quot;), new JProperty(&quot;stage&quot;,&quot;dlp&quot;), new JProperty(&quot;reason&quot;,&quot;DLP pattern matched: &quot;+(string)context.Variables[&quot;dlpHit&quot;])).ToString(); }</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <send-request mode="new" response-variable-name="csResponse" timeout="20" ignore-error="true">
+      <set-url>__CONTENT_SAFETY_ENDPOINT__/contentsafety/text:analyze?api-version=2024-09-01</set-url>
+      <set-method>POST</set-method>
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/json</value>
+      </set-header>
+      <set-body>@{
+          var t = (string)context.Variables[&quot;inputText&quot;];
+          return new JObject(new JProperty(&quot;text&quot;, t), new JProperty(&quot;categories&quot;, new JArray(&quot;Hate&quot;,&quot;Violence&quot;,&quot;SelfHarm&quot;,&quot;Sexual&quot;))).ToString();
+      }</set-body>
+      <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+    </send-request>
+    <set-variable name="maxSev" value="@{
+        try {
+            var resp = (IResponse)context.Variables[&quot;csResponse&quot;];
+            var j = resp.Body.As&lt;JObject&gt;();
+            int max = 0;
+            foreach (var c in (JArray)j[&quot;categoriesAnalysis&quot;]) {
+                int s = (int)c[&quot;severity&quot;];
+                if (s &gt; max) { max = s; }
+            }
+            return max;
+        } catch { return -1; }
+    }" />
+    <choose>
+      <when condition="@((int)context.Variables[&quot;maxSev&quot;] &gt;= 4)">
+        <return-response>
+          <set-status code="403" reason="Blocked by Content Safety" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{ return new JObject(new JProperty(&quot;verdict&quot;,&quot;block&quot;), new JProperty(&quot;stage&quot;,&quot;content-safety&quot;), new JProperty(&quot;maxSeverity&quot;,(int)context.Variables[&quot;maxSev&quot;])).ToString(); }</set-body>
+        </return-response>
+      </when>
+      <otherwise>
+        <return-response>
+          <set-status code="200" reason="OK" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{ return new JObject(new JProperty(&quot;verdict&quot;,&quot;allow&quot;), new JProperty(&quot;maxSeverity&quot;,(int)context.Variables[&quot;maxSev&quot;])).ToString(); }</set-body>
+        </return-response>
+      </otherwise>
+    </choose>
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

@@ -1,0 +1,16 @@
+# Local proxy venv
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# mitmproxy artifacts (never commit CAs/keys)
+*.pem
+*.p12
+*.cer
+mitmproxy-ca*
+
+# Editor / OS
+.DS_Store
+*.swp
